@@ -1,19 +1,21 @@
 package com.hazelcast.Scala.dds
 
-import scala.concurrent._
+import collection.immutable._
+import collection.{ Map => aMap, Set => aSet, IndexedSeq }
+import concurrent._
+import scala.reflect.ClassTag
+
 import com.hazelcast.Scala._
 import com.hazelcast.Scala.aggr._
-import scala.reflect.ClassTag
-import collection.{ Map => aMap, Set => aSet }
-import collection.immutable._
-import collection.IndexedSeq
+
 import com.hazelcast.core._
+import com.hazelcast.map.IMap
 
 private object AggrDDS {
   def mode[E](distribution: aMap[E, Freq]): aSet[E] =
     distribution.groupBy(_._2).mapValues(_.keySet).toSeq.sortBy(_._1).reverseIterator.take(1) match {
       case iter if iter.hasNext =>
-        val (_, mode) = iter.next
+        val (_, mode) = iter.next()
         if (mode.size == distribution.size) Set.empty
         else mode
       case _ => Set.empty
@@ -39,7 +41,7 @@ trait AggrDDS[E] {
       init: => A,
       es: IExecutorService = null,
       ts: UserContext.Key[collection.parallel.TaskSupport] = null)(seqop: (A, E) => A, combop: (A, A) => A)(implicit ec: ExecutionContext): Future[A] = {
-    val aggregator = new InlineAggregator(init _, seqop, combop)
+    val aggregator = new InlineAggregator(() => init, seqop, combop)
     submit(aggregator, es, ts)
   }
   def aggregateInto[AK, A](to: IMap[AK, A], key: AK)(

@@ -8,11 +8,13 @@ import scala.concurrent.{ ExecutionContext, Future }
 import scala.concurrent.duration.Duration
 
 import com.hazelcast.core._
+import com.hazelcast.map.IMap
 
 final class AsyncMap[K, V] private[Scala] (protected val imap: IMap[K, V])
-    extends KeyedIMapAsyncDeltaUpdates[K, V] {
+extends KeyedIMapAsyncDeltaUpdates[K, V] {
 
-  def get(key: K): Future[Option[V]] = imap.getAsync(key).asScalaOpt
+  def get(key: K)(implicit ec: ExecutionContext): Future[Option[V]] =
+    imap.getAsync(key).asScalaOpt
 
   def getAll(keys: Set[K])(implicit ec: ExecutionContext): Future[Map[K, V]] = {
     val fResults = keys.iterator.map { key =>
@@ -27,79 +29,99 @@ final class AsyncMap[K, V] private[Scala] (protected val imap: IMap[K, V])
     Future.sequence(fResults).map(_.flatten.toMap)
   }
 
-  def put(key: K, value: V, ttl: Duration = Duration.Inf): Future[Option[V]] =
+  def put(key: K, value: V, ttl: Duration = Duration.Inf)(implicit ec: ExecutionContext): Future[Option[V]] =
     if (ttl.isFinite && ttl.length > 0) {
       imap.putAsync(key, value, ttl.length, ttl.unit).asScalaOpt
     } else {
       imap.putAsync(key, value).asScalaOpt
     }
 
-  def putIfAbsent(key: K, value: V, ttl: Duration = Duration.Inf): Future[Option[V]] = {
+  def putIfAbsent(
+      key: K, value: V, ttl: Duration = Duration.Inf)(
+      implicit
+      ec: ExecutionContext): Future[Option[V]] = {
     val ep =
       if (ttl.isFinite && ttl.length > 0) {
-        new AsyncMap.TTLPutIfAbsentEP(imap.getName, value, ttl.length, ttl.unit)
+        new AsyncMap.TTLPutIfAbsentEP[K, V](imap.getName, value, ttl.length, ttl.unit)
       } else {
-        new AsyncMap.PutIfAbsentEP(value)
+        new AsyncMap.PutIfAbsentEP[K, V](value)
       }
-    val callback = ep.newCallbackOpt
-    imap.submitToKey(key, ep, callback)
-    callback.future
+    imap
+      .submitToKey(key, ep)
+      .asScalaOpt
   }
 
-  def setIfAbsent(key: K, value: V, ttl: Duration = Duration.Inf): Future[Boolean] = {
+  def setIfAbsent(
+      key: K, value: V, ttl: Duration = Duration.Inf)(
+      implicit ec: ExecutionContext): Future[Boolean] = {
     val ep =
       if (ttl.isFinite && ttl.length > 0) {
-        new AsyncMap.TTLSetIfAbsentEP(imap.getName, value, ttl.length, ttl.unit)
+        new AsyncMap.TTLSetIfAbsentEP[K, V](imap.getName, value, ttl.length, ttl.unit)
       } else {
-        new AsyncMap.SetIfAbsentEP(value)
+        new AsyncMap.SetIfAbsentEP[K, V](value)
       }
-    val callback = ep.newCallback()
-    imap.submitToKey(key, ep, callback)
-    callback.future
+    imap
+      .submitToKey(key, ep)
+      .asScala
   }
-  private[this] val any2unit = (any: Any) => ()
-  def set(key: K, value: V, ttl: Duration = Duration.Inf): Future[Unit] = {
+  implicit private[this] val any2unit = (any: Any) => ()
+  def set(
+      key: K, value: V, ttl: Duration = Duration.Inf)(
+      implicit
+      ec: ExecutionContext)
+      : Future[Unit] = {
     if (ttl.isFinite && ttl.length > 0) {
-      imap.setAsync(key, value, ttl.length, ttl.unit).asScala(any2unit)
+      imap.setAsync(key, value, ttl.length, ttl.unit).asScala
     } else {
-      imap.setAsync(key, value).asScala(any2unit)
+      imap.setAsync(key, value).asScala
     }
   }
 
-  def remove(key: K): Future[Option[V]] =
+  def remove(key: K)(implicit ec: ExecutionContext): Future[Option[V]] =
     imap.removeAsync(key).asScalaOpt
 
-  def getAs[R](key: K)(map: V => R): Future[Option[R]] = {
-    val ep = new AsyncMap.GetAsEP(map)
-    val callback = ep.newCallbackOpt
-    imap.submitToKey(key, ep, callback)
-    callback.future
+  def getAs[R](
+      key: K)(
+      map: V => R)(
+      implicit
+      ec: ExecutionContext)
+      : Future[Option[R]] = {
+    val ep = new AsyncMap.GetAsEP[K, V, R](map)
+    imap
+      .submitToKey(key, ep)
+      .asScalaOpt
   }
-  def getAs[C, R](getCtx: HazelcastInstance => C, key: K)(mf: (C, V) => R): Future[Option[R]] = {
-    val ep = new AsyncMap.ContextGetAsEP(getCtx, mf)
-    val callback = ep.newCallbackOpt
-    imap.submitToKey(key, ep, callback)
-    callback.future
+  def getAs[C, R](
+      getCtx: HazelcastInstance => C,
+      key: K)(
+      mf: (C, V) => R)(
+      implicit
+      ec: ExecutionContext)
+      : Future[Option[R]] = {
+    val ep = new AsyncMap.ContextGetAsEP[C, K, V, R](getCtx, mf)
+    imap
+      .submitToKey(key, ep)
+      .asScalaOpt
   }
 
 }
 
 private[Scala] object AsyncMap {
-  final class GetAsEP[V, R](val mf: V => R)
-      extends SingleEntryCallbackReader[Any, V, R] {
-    def onEntry(key: Any, value: V): R = {
+  final class GetAsEP[K, V, R](val mf: V => R)
+      extends SingleEntryCallbackReader[K, V, R] {
+    def onEntry(key: K, value: V): R = {
       value match {
         case null => null.asInstanceOf[R]
         case value => mf(value)
       }
     }
   }
-  final class ContextGetAsEP[C, V, R](val getCtx: HazelcastInstance => C, val mf: (C, V) => R)
-      extends SingleEntryCallbackReader[Any, V, R]
+  final class ContextGetAsEP[C, K, V, R](val getCtx: HazelcastInstance => C, val mf: (C, V) => R)
+      extends SingleEntryCallbackReader[K, V, R]
       with HazelcastInstanceAware {
     @BeanProperty @transient
     var hazelcastInstance: HazelcastInstance = _
-    def onEntry(key: Any, value: V): R = {
+    def onEntry(key: K, value: V): R = {
       value match {
         case null => null.asInstanceOf[R]
         case value =>
@@ -108,22 +130,22 @@ private[Scala] object AsyncMap {
       }
     }
   }
-  final class TTLPutIfAbsentEP[V](val mapName: String, val putIfAbsent: V, val ttl: Long, val unit: TimeUnit)
-      extends SingleEntryCallbackReader[Any, V, V]
+  final class TTLPutIfAbsentEP[K, V](val mapName: String, val putIfAbsent: V, val ttl: Long, val unit: TimeUnit)
+      extends SingleEntryCallbackReader[K, V, V]
       with HazelcastInstanceAware {
     @BeanProperty @transient
     var hazelcastInstance: HazelcastInstance = _
-    def onEntry(key: Any, existing: V): V = {
+    def onEntry(key: K, existing: V): V = {
       if (existing == null) {
-        val imap = hazelcastInstance.getMap[Any, V](mapName)
+        val imap = hazelcastInstance.getMap[K, V](mapName)
         imap.set(key, putIfAbsent, ttl, unit)
       }
       existing
     }
   }
-  final class PutIfAbsentEP[V](val putIfAbsent: V)
-      extends SingleEntryCallbackUpdater[Any, V, V] {
-    def onEntry(entry: Entry[Any, V]): V = {
+  final class PutIfAbsentEP[K, V](val putIfAbsent: V)
+      extends SingleEntryCallbackUpdater[K, V, V] {
+    def onEntry(entry: Entry[K, V]): V = {
       val existing = entry.value
       if (existing == null) {
         entry.value = putIfAbsent
@@ -131,23 +153,23 @@ private[Scala] object AsyncMap {
       existing
     }
   }
-  final class TTLSetIfAbsentEP[V](val mapName: String, val putIfAbsent: V, val ttl: Long, val unit: TimeUnit)
-      extends SingleEntryCallbackReader[Any, V, Boolean]
+  final class TTLSetIfAbsentEP[K, V](val mapName: String, val putIfAbsent: V, val ttl: Long, val unit: TimeUnit)
+      extends SingleEntryCallbackReader[K, V, Boolean]
       with HazelcastInstanceAware {
     @BeanProperty @transient
     var hazelcastInstance: HazelcastInstance = _
-    def onEntry(key: Any, existing: V): Boolean = {
+    def onEntry(key: K, existing: V): Boolean = {
       val set = existing == null
       if (set) {
-        val imap = hazelcastInstance.getMap[Any, V](mapName)
+        val imap = hazelcastInstance.getMap[K, V](mapName)
         imap.set(key, putIfAbsent, ttl, unit)
       }
       set
     }
   }
-  final class SetIfAbsentEP[V](val putIfAbsent: V)
-      extends SingleEntryCallbackUpdater[Any, V, Boolean] {
-    def onEntry(entry: Entry[Any, V]): Boolean = {
+  final class SetIfAbsentEP[K, V](val putIfAbsent: V)
+      extends SingleEntryCallbackUpdater[K, V, Boolean] {
+    def onEntry(entry: Entry[K, V]): Boolean = {
       val set = entry.value == null
       if (set) {
         entry.value = putIfAbsent

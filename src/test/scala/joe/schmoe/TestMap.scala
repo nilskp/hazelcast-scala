@@ -12,18 +12,15 @@ import scala.BigDecimal.RoundingMode._
 import scala.collection.JavaConverters._
 import scala.concurrent.duration._
 import scala.io.Source
-import scala.util._
+import scala.util._, control.NoStackTrace
 
 import org.scalatest._, Matchers._
 
 import com.hazelcast.Scala._
 import com.hazelcast.config.InMemoryFormat
-import com.hazelcast.config.MapIndexConfig
-import com.hazelcast.core.IMap
-import com.hazelcast.map.AbstractEntryProcessor
+import com.hazelcast.config.IndexConfig
+import com.hazelcast.map.{ IMap, MapStore, EntryProcessor }
 import com.hazelcast.query.Predicate
-import com.hazelcast.core.MapStore
-import scala.util.control.NoStackTrace
 import com.hazelcast.core.IExecutorService
 
 object TestMap extends ClusterSetup {
@@ -383,7 +380,7 @@ class TestMap extends FunSuite with CleanUp with BeforeAndAfterAll with BeforeAn
 
     val mapName = UUID.randomUUID.toString
     memberConfig.getMapConfig(mapName)
-      .addMapIndexConfig(new MapIndexConfig("salary", true))
+      .addIndexConfig(new IndexConfig("salary", true))
       .setInMemoryFormat(InMemoryFormat.OBJECT)
     val clientMap = client.getMap[UUID, Employee](mapName)
 

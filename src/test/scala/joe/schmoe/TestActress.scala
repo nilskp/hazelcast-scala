@@ -2,21 +2,21 @@ package joe.schmoe
 
 import org.scalatest._
 
-import com.hazelcast.Scala.actress._
+import com.hazelcast.Scala.actor._
 import com.hazelcast.Scala.serialization.SerializerEnum
 import com.hazelcast.nio.ObjectDataOutput
 import com.hazelcast.nio.ObjectDataInput
 
-object TestActress extends ClusterSetup {
+object TestHzActor extends ClusterSetup {
 
   override def clusterSize = 3
 
   def init = {
-    ActressSerializers.register(memberConfig.getSerializationConfig)
+    HzActorSerializers.register(memberConfig.getSerializationConfig)
   }
   def destroy = ()
 
-  object ActressSerializers extends SerializerEnum(TestKryoSerializers) {
+  object HzActorSerializers extends SerializerEnum(TestKryoSerializers) {
     val JaneFondaSer = new StreamSerializer[JaneFonda] {
       def write(out: ObjectDataOutput, jf: JaneFonda): Unit = {
         out.writeInt(jf.currCounter)
@@ -33,8 +33,8 @@ object TestActress extends ClusterSetup {
   }
 }
 
-class TestActress extends FunSuite with BeforeAndAfterAll {
-  import TestActress._
+class TestHzActor extends FunSuite with BeforeAndAfterAll {
+  import TestHzActor._
 
   override def beforeAll() = beforeClass()
   override def afterAll() = afterClass()
@@ -42,7 +42,7 @@ class TestActress extends FunSuite with BeforeAndAfterAll {
   test("foo") {
     memberConfig.getMapConfig("Foo").setBackupCount(2)
     val stage: Stage = new Stage("Foo", client)
-    val janeFonda = stage.actressOf("fonda/jane", new JaneFonda)
+    val janeFonda = stage.actorOf("fonda/jane", new JaneFonda)
     janeFonda {
       case (_, janeFonda) =>
         janeFonda.incrementBy(3)

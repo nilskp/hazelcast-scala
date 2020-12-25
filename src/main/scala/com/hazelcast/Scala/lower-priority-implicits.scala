@@ -3,9 +3,17 @@ package com.hazelcast.Scala
 import java.util.Map.Entry
 
 import com.hazelcast.Scala.dds._
-import com.hazelcast.core._
+import com.hazelcast.core.{ HazelcastInstance, IExecutorService }
 import com.hazelcast.durableexecutor.DurableExecutorService
-import com.hazelcast.query._
+import com.hazelcast.query.{ Predicate, PredicateBuilder }
+import com.hazelcast.query.impl.predicates.SqlPredicate
+import com.hazelcast.cluster.Cluster
+import com.hazelcast.client.ClientService
+import com.hazelcast.partition.PartitionService
+import com.hazelcast.topic.ITopic
+import com.hazelcast.collection.BaseQueue
+import com.hazelcast.transaction.TransactionalQueue
+import com.hazelcast.map.IMap
 
 import language.implicitConversions
 

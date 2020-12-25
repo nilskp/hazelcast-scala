@@ -14,17 +14,18 @@ import com.hazelcast.Scala.dds.DDS
 import com.hazelcast.Scala.dds.MapDDS
 import com.hazelcast.core.HazelcastInstance
 import com.hazelcast.core.HazelcastInstanceAware
-import com.hazelcast.core.IMap
-import com.hazelcast.map.AbstractEntryProcessor
-import com.hazelcast.query.PagingPredicate
+import com.hazelcast.core.ReadOnly
+import com.hazelcast.map.IMap
+import com.hazelcast.query.impl.predicates.PagingPredicateImpl
 import com.hazelcast.query.Predicate
 import com.hazelcast.query.PredicateBuilder
-import com.hazelcast.spi.AbstractDistributedObject
+import com.hazelcast.spi.impl.AbstractDistributedObject
 import com.hazelcast.map.impl.recordstore.RecordStore
-import com.hazelcast.nio.serialization.Data
+import com.hazelcast.internal.serialization.Data
 import scala.collection.parallel.ParIterable
 import com.hazelcast.map.impl.MapServiceContext
 import com.hazelcast.map.impl.record.Record
+import com.hazelcast.map.EntryProcessor
 
 final class HzMap[K, V](protected val imap: IMap[K, V])
   extends KeyedIMapDeltaUpdates[K, V]
@@ -89,6 +90,8 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
 
   def async: AsyncMap[K, V] = new AsyncMap(imap)
 
+  import ExecutionContext.parasitic
+
   /**
    * NOTE: This method is generally slower than `get`
    * and also will not be part of `get` statistics.
@@ -97,10 +100,10 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
    * unnecessary network traffic.
    */
   def getAs[R](key: K)(map: V => R): Option[R] =
-    async.getAs(key)(map).await
+    async.getAs(key)(map)(parasitic).await
 
   def getAs[C, R](getCtx: HazelcastInstance => C, key: K)(mf: (C, V) => R): Option[R] =
-    async.getAs(getCtx, key)(mf).await
+    async.getAs(getCtx, key)(mf)(parasitic).await
 
   def getAll(keys: cSet[K]): mMap[K, V] =
     if (keys.isEmpty) mMap.empty
@@ -109,29 +112,37 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
   def getAllAs[R](keys: cSet[K])(mf: V => R): mMap[K, R] =
     if (keys.isEmpty) mMap.empty
     else {
-      val ep = new HzMap.GetAllAsEP(mf)
-      imap.executeOnKeys(keys.asJava, ep).asScala.asInstanceOf[mMap[K, R]]
+      val ep = new HzMap.GetAllAsEP[K, V, R](mf)
+      imap
+        .executeOnKeys(keys.asJava, ep)
+        .asScala
     }
 
-  def query[T](pred: Predicate[_, _])(mf: V => T): mMap[K, T] = {
-    val ep = new HzMap.QueryEP(mf)
-    imap.executeOnEntries(ep, pred).asScala.asInstanceOf[mMap[K, T]]
+  def query[T](pred: Predicate[K, V])(mf: V => T): mMap[K, T] = {
+    val ep = new HzMap.QueryEP[K, V, T](mf)
+    imap
+      .executeOnEntries(ep, pred)
+      .asScala
+      // .asInstanceOf[mMap[K, T]]
   }
-  def query[C, T](ctx: HazelcastInstance => C, pred: Predicate[_, _])(mf: (C, K, V) => T): mMap[K, T] = {
-    val ep = new HzMap.ContextQueryEP(ctx, mf)
-    imap.executeOnEntries(ep, pred).asScala.asInstanceOf[mMap[K, T]]
+  def query[C, T](ctx: HazelcastInstance => C, pred: Predicate[K, V])(mf: (C, K, V) => T): mMap[K, T] = {
+    val ep = new HzMap.ContextQueryEP[C, K, V, T](ctx, mf)
+    imap
+      .executeOnEntries(ep, pred)
+      .asScala
+      // .asInstanceOf[mMap[K, T]]
   }
 
-  def foreach[C](ctx: HazelcastInstance => C, pred: Predicate[_, _] = null)(thunk: (C, K, V) => Unit): Unit = {
-    val ep = new HzMap.ForEachEP(ctx, thunk)
+  def foreach[C](ctx: HazelcastInstance => C, pred: Predicate[K, V] = null)(thunk: (C, K, V) => Unit): Unit = {
+    val ep = new HzMap.ForEachEP[K, V, C](ctx, thunk)
     pred match {
       case null => imap.executeOnEntries(ep)
       case pred => imap.executeOnEntries(ep, pred)
     }
   }
 
-  private def updateValues(predicate: Option[Predicate[_, _]], update: V => V, returnValue: V => Object): mMap[K, V] = {
-    val ep = new HzMap.ValueUpdaterEP(update, returnValue)
+  private def updateValues(predicate: Option[Predicate[K, V]], update: V => V, returnValue: V => Object): mMap[K, V] = {
+    val ep = new HzMap.ValueUpdaterEP[K, V](update, returnValue)
     val map = predicate match {
       case Some(predicate) => imap.executeOnEntries(ep, predicate)
       case None => imap.executeOnEntries(ep)
@@ -139,10 +150,10 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
     map.asScala.asInstanceOf[mMap[K, V]]
   }
 
-  def updateAll(predicate: Predicate[_, _] = null)(updateIfPresent: V => V): Unit = {
+  def updateAll(predicate: Predicate[K, V] = null)(updateIfPresent: V => V): Unit = {
     updateValues(Option(predicate), updateIfPresent, _ => null)
   }
-  def updateAndGetAll(predicate: Predicate[_, _])(updateIfPresent: V => V): mMap[K, V] = {
+  def updateAndGetAll(predicate: Predicate[K, V])(updateIfPresent: V => V): mMap[K, V] = {
     updateValues(Option(predicate), updateIfPresent, _.asInstanceOf[Object])
   }
 
@@ -177,28 +188,35 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
   }
 
   def setIfAbsent(key: K, value: V, ttl: Duration = Duration.Inf): Boolean =
-    async.setIfAbsent(key, value, ttl).await
+    async.setIfAbsent(key, value, ttl)(parasitic).await
 
   def execute[R](filter: EntryFilter[K, V])(thunk: Entry[K, filter.EV] => R): filter.M[R] = {
-      def ep = new HzMap.ExecuteEP(thunk)
+      def ep: EntryProcessor[K, filter.EV, R] = new HzMap.ExecuteEP(thunk)
     filter match {
       case ok @ OnKey(key) =>
-        val okThunk = thunk.asInstanceOf[Entry[K, ok.EV] => R]
-        imap.executeOnKey(key, new HzMap.ExecuteOptEP(okThunk))
+        val onKeyThunk = thunk.asInstanceOf[Entry[K, ok.EV] => R]
+        imap
+          .executeOnKey(key, new HzMap.ExecuteOptEP(onKeyThunk))
           .asInstanceOf[filter.M[R]]
       case OnEntries(null) =>
-        imap.executeOnEntries(ep)
-          .asScala.asInstanceOf[filter.M[R]]
+        imap
+          .executeOnEntries(ep)
+          .asScala
+          // .asInstanceOf[filter.M[R]]
       case OnEntries(predicate) =>
-        imap.executeOnEntries(ep, predicate)
-          .asScala.asInstanceOf[filter.M[R]]
+        imap
+          .executeOnEntries(ep, predicate)
+          .asScala
+          // .asInstanceOf[filter.M[R]]
       case OnKeys(keys) => {
-        if (keys.isEmpty) java.util.Collections.emptyMap()
+        if (keys.isEmpty) java.util.Collections.emptyMap[K, R]()
         else imap.executeOnKeys(keys.asJava, ep)
-      }.asScala.asInstanceOf[filter.M[R]]
+      }.asScala
+      // .asInstanceOf[filter.M[R]]
       case OnValues(include) =>
         imap.executeOnEntries(ep, new ValuePredicate(include))
-          .asScala.asInstanceOf[filter.M[R]]
+          .asScala
+          // .asInstanceOf[filter.M[R]]
     }
   }
 
@@ -215,17 +233,17 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
   def onPartitionLost(runOn: ExecutionContext)(listener: PartialFunction[PartitionLost, Unit]): MSR = {
     val regId = imap addPartitionLostListener EventSubscription.asPartitionLostListener(listener, Option(runOn))
     new ListenerRegistration {
-      def cancel = imap removePartitionLostListener regId
+      def cancel() = imap removePartitionLostListener regId
     }
   }
 
-  def filter(pred: PredicateBuilder): DDS[Entry[K, V]] = new MapDDS(imap, pred)
-  def filter(pred: Predicate[_, _]): DDS[Entry[K, V]] = new MapDDS(imap, pred)
+  def filter(pred: PredicateBuilder): DDS[Entry[K, V]] = new MapDDS(imap, pred.asInstanceOf[Predicate[K, V]])
+  def filter(pred: Predicate[K, V]): DDS[Entry[K, V]] = new MapDDS(imap, pred)
 
   // TODO: Perhaps a macro could turn this into an IndexAwarePredicate?
   def filter(f: (K, V) => Boolean): DDS[Entry[K, V]] = new MapDDS(imap, new EntryPredicate(f))
 
-  def values[O: Ordering](range: Range, pred: Predicate[_, _] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[V] = {
+  def values[O: Ordering](range: Range, pred: Predicate[K, V] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[V] = {
     val pageSize = range.length
     val pageIdx = range.min / pageSize
     val dropValues = range.min % pageSize
@@ -236,13 +254,13 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
       }
       def compare(a: Entry[K, V], b: Entry[K, V]): Int = ordering.compare(sortBy(a), sortBy(b))
     }
-    val pp = new PagingPredicate(pred.asInstanceOf[Predicate[K, V]], comparator, pageSize)
+    val pp = new PagingPredicateImpl(pred, comparator, pageSize)
     pp.setPage(pageIdx)
     val result = imap.values(pp).asScala
     if (dropValues == 0) result
     else result.drop(dropValues)
   }
-  def entries[O: Ordering](range: Range, pred: Predicate[_, _] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[Entry[K, V]] = {
+  def entries[O: Ordering](range: Range, pred: Predicate[K, V] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[Entry[K, V]] = {
     val pageSize = range.length
     val pageIdx = range.min / pageSize
     val dropEntries = range.min % pageSize
@@ -254,13 +272,13 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
       def compare(a: Entry[K, V], b: Entry[K, V]): Int =
         ordering.compare(sortBy(a), sortBy(b))
     }
-    val pp = new PagingPredicate(pred.asInstanceOf[Predicate[K, V]], comparator, pageSize)
+    val pp = new PagingPredicateImpl(pred, comparator, pageSize)
     pp.setPage(pageIdx)
     val result = imap.entrySet(pp).iterator.asScala.toIterable
     if (dropEntries == 0) result
     else result.drop(dropEntries)
   }
-  def keys[O: Ordering](range: Range, localOnly: Boolean = false, pred: Predicate[_, _] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[K] = {
+  def keys[O: Ordering](range: Range, localOnly: Boolean = false, pred: Predicate[K, V] = null)(sortBy: Entry[K, V] => O, reverse: Boolean = false): Iterable[K] = {
     val pageSize = range.length
     val pageIdx = range.min / pageSize
     val dropEntries = range.min % pageSize
@@ -272,7 +290,7 @@ final class HzMap[K, V](protected val imap: IMap[K, V])
       def compare(a: Entry[K, V], b: Entry[K, V]): Int =
         ordering.compare(sortBy(a), sortBy(b))
     }
-    val pp = new PagingPredicate(pred.asInstanceOf[Predicate[K, V]], comparator, pageSize)
+    val pp = new PagingPredicateImpl(pred, comparator, pageSize)
     pp.setPage(pageIdx)
     val result = (if (localOnly) imap.localKeySet(pp) else imap.keySet(pp)).iterator.asScala.toIterable
     if (dropEntries == 0) result
@@ -290,67 +308,82 @@ private[Scala] object HzMap {
     field.setAccessible(true)
     field
   }
-  def mapServiceContext(imap: IMap[_, _]): Try[MapServiceContext] = MapServiceCtxField.flatMap(field => Try(field.get(imap).asInstanceOf[MapServiceContext]))
-
-  final class GetAllAsEP[K, V, T](_mf: V => T) extends AbstractEntryProcessor[K, V](false) {
-    def mf = _mf
-    def process(entry: Entry[K, V]): Object = {
-      entry.value match {
-        case null => null
-        case value => _mf(value).asInstanceOf[Object]
+  def mapServiceContext(imap: IMap[_, _]): Try[MapServiceContext] =
+    MapServiceCtxField
+      .flatMap { field =>
+        Try(field.get(imap).asInstanceOf[MapServiceContext])
       }
-    }
-  }
-  final class QueryEP[V, T](_mf: V => T) extends AbstractEntryProcessor[Any, V](false) {
+
+  final class GetAllAsEP[K, V, T](_mf: V => T)
+  extends EntryProcessor[K, V, T]
+  with ReadOnly {
     def mf = _mf
-    def process(entry: Entry[Any, V]): Object = _mf(entry.value).asInstanceOf[Object]
+    def process(entry: Entry[K, V]): T =
+      entry.value match {
+        case null => null.asInstanceOf[T]
+        case value => _mf(value)
+      }
+
+  }
+  final class QueryEP[K, V, T](_mf: V => T)
+  extends EntryProcessor[K, V, T]
+  with ReadOnly {
+    def mf = _mf
+    def process(entry: Entry[K, V]): T =
+      _mf(entry.value)
   }
   final class ContextQueryEP[C, K, V, T](val getCtx: HazelcastInstance => C, _mf: (C, K, V) => T)
-    extends AbstractEntryProcessor[K, V](false)
-    with HazelcastInstanceAware {
+  extends EntryProcessor[K, V, T]
+  with HazelcastInstanceAware
+  with ReadOnly {
     @transient private[this] var ctx: C = _
     def setHazelcastInstance(hz: HazelcastInstance): Unit = {
       this.ctx = getCtx(hz)
     }
     def mf = _mf
-    def process(entry: Entry[K, V]): Object = _mf(ctx, entry.key, entry.value).asInstanceOf[Object]
+    def process(entry: Entry[K, V]): T =
+      _mf(ctx, entry.key, entry.value)
   }
   final class ForEachEP[K, V, C](val getCtx: HazelcastInstance => C, _thunk: (C, K, V) => Unit)
-    extends AbstractEntryProcessor[K, V](false)
-    with HazelcastInstanceAware {
+  extends EntryProcessor[K, V, Null]
+  with HazelcastInstanceAware
+  with ReadOnly {
     def thunk = _thunk
     @transient private[this] var ctx: C = _
     def setHazelcastInstance(hz: HazelcastInstance) = ctx = getCtx(hz)
-    def process(entry: Entry[K, V]): Object = {
+    def process(entry: Entry[K, V]): Null = {
       _thunk(ctx, entry.key, entry.value)
       null
     }
   }
-  final class ValueUpdaterEP[V](_update: V => V, _returnValue: V => Object) extends AbstractEntryProcessor[Any, V](true) {
+  final class ValueUpdaterEP[K, V](_update: V => V, _returnValue: V => Object)
+  extends EntryProcessor[K, V, Object] {
     def update = _update
     def returnValue = _returnValue
-    def process(entry: Entry[Any, V]): Object = {
+    def process(entry: Entry[K, V]): Object = {
       entry.value = _update(entry.value)
       _returnValue(entry.value)
     }
   }
-  final class ExecuteEP[K, V, R](_thunk: Entry[K, V] => R) extends AbstractEntryProcessor[K, V](true) {
+  final class ExecuteEP[K, V, R](_thunk: Entry[K, V] => R)
+  extends EntryProcessor[K, V, R] {
     def thunk = _thunk
-    def process(entry: Entry[K, V]): Object = _thunk(entry) match {
-      case null | _: Unit => null
-      case value => value.asInstanceOf[Object]
+    def process(entry: Entry[K, V]): R = _thunk(entry) match {
+      case null | _: Unit => null.asInstanceOf[R]
+      case value => value
     }
   }
-  final class ExecuteOptEP[K, V, R](_thunk: Entry[K, Option[V]] => R) extends AbstractEntryProcessor[K, V](true) {
+  final class ExecuteOptEP[K, V, R](_thunk: Entry[K, Option[V]] => R)
+  extends EntryProcessor[K, V, R] {
     private class OptEntry(org: Entry[K, V]) extends Entry[K, Option[V]] {
       def getKey() = org.getKey
       def getValue() = Option(org.getValue)
       def setValue(opt: Option[V]): Option[V] = Option(org.setValue(opt getOrElse null.asInstanceOf[V]))
     }
     def thunk = _thunk
-    def process(entry: Entry[K, V]): Object = _thunk(new OptEntry(entry)) match {
-      case null | _: Unit => null
-      case value => value.asInstanceOf[Object]
+    def process(entry: Entry[K, V]): R = _thunk(new OptEntry(entry)) match {
+      case null | _: Unit => null.asInstanceOf[R]
+      case value => value
     }
   }
 }

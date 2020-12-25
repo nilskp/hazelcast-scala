@@ -1,9 +1,8 @@
 package com.hazelcast.Scala
 
-import com.hazelcast.core.PartitionService
+import com.hazelcast.partition.PartitionService
 import scala.concurrent.ExecutionContext
 import com.hazelcast.partition.PartitionLostEvent
-import com.hazelcast.core.MigrationEvent
 
 class HzPartitionService(private val service: PartitionService) extends AnyVal {
   def onPartitionLost(runOn: ExecutionContext = null)(listener: PartitionLostEvent => Unit): ListenerRegistration = {

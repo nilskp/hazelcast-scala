@@ -3,6 +3,7 @@ package com.hazelcast.Scala
 import java.util.Map.Entry
 import concurrent.Future
 import com.hazelcast.core._
+import com.hazelcast.map.IMap
 
 private[Scala] trait KeyedDeltaUpdates[K, V] {
   type UpdateR[T]
@@ -326,7 +327,7 @@ private[Scala] trait KeyedIMapDeltaUpdates[K, V]
 }
 
 private[Scala] trait KeyedIMapAsyncDeltaUpdates[K, V] extends KeyedDeltaUpdates[K, V] {
-  import com.hazelcast.core.IMap
+  import com.hazelcast.map.IMap
   import KeyedDeltaUpdates._
 
   protected def imap: IMap[K, V]

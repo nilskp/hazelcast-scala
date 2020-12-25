@@ -4,7 +4,7 @@ import scala.collection.{ Map, Set }
 import scala.collection.parallel.CollectionConverters._
 
 import com.hazelcast.core.HazelcastInstance
-import com.hazelcast.core.IMap
+import com.hazelcast.map.IMap
 
 private[Scala] sealed trait Join[V, JK, JV] {
   type T

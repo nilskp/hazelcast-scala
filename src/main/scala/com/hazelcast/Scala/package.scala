@@ -1,9 +1,13 @@
 package com.hazelcast
 
-import config._
-import core.{ MapEvent => _, _ }
-import query._
+import core.{ HazelcastInstance, DistributedObject }
+import cp.ICountDownLatch
+import collection.ICollection
+import topic.Message
 import ringbuffer.Ringbuffer
+import config._
+import map._
+import query._, PredicateBuilder.EntryObject
 
 import java.lang.reflect.Method
 import java.util.AbstractMap
@@ -14,6 +18,7 @@ import scala.concurrent.duration.{ DurationInt, FiniteDuration }
 import scala.language.implicitConversions
 import scala.util.Try
 import scala.util.control.NonFatal
+import java.util.concurrent.Executor
 
 package object Scala extends HighPriorityImplicits {
 
@@ -31,7 +36,7 @@ package object Scala extends HighPriorityImplicits {
     @inline def get(): T = msg.getMessageObject
   }
 
-  implicit def toConfig(ms: MaxSize): MaxSizeConfig = ms.toConfig
+  implicit def toConfig(ms: MaxSize): MaxSizePolicy = ms.toConfig
   implicit def mbrConf2props(conf: Config): HzMemberProperties = new HzMemberProperties(conf)
   implicit def mbrConf2scala(conf: Config): HzConfig = new HzConfig(conf)
 
@@ -52,18 +57,18 @@ package object Scala extends HighPriorityImplicits {
     @inline def value_=(newValue: V): Unit = entry.setValue(newValue)
   }
 
-  implicit class HzPredicate(private val pred: Predicate[_, _]) extends AnyVal {
-    def &&(other: Predicate[_, _]): Predicate[_, _] = Predicates.and(pred, other)
-    def and(other: Predicate[_, _]): Predicate[_, _] = Predicates.and(pred, other)
-    def ||(other: Predicate[_, _]): Predicate[_, _] = Predicates.or(pred, other)
-    def or(other: Predicate[_, _]): Predicate[_, _] = Predicates.or(pred, other)
-    def unary_!(): Predicate[_, _] = Predicates.not(pred)
+  implicit class HzPredicate[K, V](private val pred: Predicate[K, V]) extends AnyVal {
+    def &&(other: Predicate[K, V]): Predicate[K, V] = Predicates.and(pred, other)
+    def and(other: Predicate[K, V]): Predicate[K, V] = Predicates.and(pred, other)
+    def ||(other: Predicate[K, V]): Predicate[K, V] = Predicates.or(pred, other)
+    def or(other: Predicate[K, V]): Predicate[K, V] = Predicates.or(pred, other)
+    def unary_! : Predicate[K, V] = Predicates.not(pred)
   }
 
   implicit class HzMapConfig(conf: config.MapConfig) extends MapEventSubscription {
     def withTypes[K, V] = new HzTypedMapConfig[K, V](conf)
     type MSR = this.type
-    def onMapEvents(localOnly: Boolean, runOn: ExecutionContext)(pf: PartialFunction[MapEvent, Unit]): MSR = {
+    def onMapEvents(localOnly: Boolean, runOn: ExecutionContext)(pf: PartialFunction[Scala.MapEvent, Unit]): MSR = {
       val mapListener = new MapListener(pf, Option(runOn))
       conf addEntryListenerConfig new config.EntryListenerConfig(mapListener, localOnly, false)
       this
@@ -101,40 +106,55 @@ package object Scala extends HighPriorityImplicits {
     def await(dur: FiniteDuration): T = Await.result(f, dur)
   }
 
+  private[Scala] implicit def toExecutor(ec: ExecutionContext): Executor =
+    ec match {
+      case exe: Executor => exe
+      case _ => new Executor { def execute(r: Runnable) = ec execute r }
+    }
+
+  private[Scala] implicit class CompletionStageOps[T](private val cs: java.util.concurrent.CompletionStage[T]) extends AnyVal {
+    def asScala[U](implicit ev: T =:= U, ec: ExecutionContext = ExecutionContext.parasitic): Future[U] = {
+      val consumer = new FutureConsumer
+      cs.whenCompleteAsync(consumer, ec)
+      consumer.future
+    }
+    def asScalaOpt[U](implicit ev: T <:< U, ec: ExecutionContext = ExecutionContext.parasitic): Future[Option[U]] = {
+      val consumer = new FutureOptConsumer
+      cs.whenCompleteAsync(consumer, ec)
+      consumer.future
+    }
+  }
   private[Scala] implicit class JavaFuture[T](private val jFuture: java.util.concurrent.Future[T]) extends AnyVal {
     @inline def await: T = await(DefaultFutureTimeout)
     @inline def await(dur: FiniteDuration): T = if (jFuture.isDone) jFuture.get else blocking(jFuture.get(dur.length, dur.unit))
-    def asScala[U](implicit ev: T => U): Future[U] = {
+    def asScala[U](implicit ev: T =:= U, ec: ExecutionContext = ExecutionContext.parasitic): Future[U] = {
       if (jFuture.isDone) try Future successful jFuture.get catch { case NonFatal(t) => Future failed t }
       else {
-        val callback = new FutureCallback[T, U]()
-        jFuture match {
-          case jFuture: ICompletableFuture[T] =>
-            jFuture andThen callback
-        }
-        callback.future
+        val consumer = new FutureConsumer
+        jFuture.whenCompleteAsync(consumer, ec)
+        consumer.future
       }
     }
-    def asScalaOpt[U](implicit ev: T <:< U): Future[Option[U]] = {
-      if (jFuture.isDone) try {
-        Future successful Option(jFuture.get: U)
-      } catch {
-        case NonFatal(t) => Future failed t
-      }
-      else {
-        val callback = new FutureCallback[T, Option[U]](None)(Some(_))
-        jFuture match {
-          case jFuture: ICompletableFuture[T] =>
-            jFuture andThen callback
-        }
-        callback.future
-      }
-    }
+  //   def asScalaOpt[U](implicit ev: T <:< U): Future[Option[U]] = {
+  //     if (jFuture.isDone) try {
+  //       Future successful Option(jFuture.get: U)
+  //     } catch {
+  //       case NonFatal(t) => Future failed t
+  //     }
+  //     else {
+  //       val callback = new FutureCallback[T, Option[U]](None)(Some(_))
+  //       jFuture match {
+  //         case jFuture: ICompletableFuture[T] =>
+  //           jFuture andThen callback
+  //       }
+  //       callback.future
+  //     }
+  //   }
   }
 
   // Sorta naughty...
   private[this] val ClientProxy_getClient: Option[Method] = Try {
-    val getClient = Class.forName("com.hazelcast.client.spi.ClientProxy").getDeclaredMethod("getClient")
+    val getClient = Class.forName("com.hazelcast.client.impl.spi.ClientProxy").getDeclaredMethod("getClient")
     getClient.setAccessible(true)
     getClient
   }.toOption
@@ -142,23 +162,48 @@ package object Scala extends HighPriorityImplicits {
   private[Scala] def getClientHzProxy(clientDOProxy: DistributedObject): Option[HazelcastInstance] =
     ClientProxy_getClient.map(_.invoke(clientDOProxy).asInstanceOf[HazelcastInstance])
 
+  private[Scala] implicit def toUnit(f: Future[Void]): Future[Unit] = f.map(_ => ())(ExecutionContext.parasitic)
+
+  private implicit def objectEntry(entry: Entry[_, _]): Entry[Object, Object] =
+    entry.asInstanceOf[Entry[Object, Object]]
+
 }
 
 package Scala {
+
+  private class FutureConsumer[T, R](implicit ev: T => R)
+  extends BiConsumer[T, Throwable] {
+    private[this] val promise = Promise[R]()
+    def future = promise.future
+    def accept(res: T, cause: Throwable): Unit = {
+      if (cause == null) promise success ev(res)
+      else promise failed cause
+    }
+  }
+  private class FutureOptConsumer[T, R](implicit ev: T => R)
+  extends BiConsumer[T, Throwable] {
+    private[this] val promise = Promise[Option[R]]()
+    def future = promise.future
+    def accept(res: T, cause: Throwable): Unit = {
+      if (cause == null) promise success Option(res).map(ev)
+      else promise failed cause
+    }
+  }
 
   private[Scala] final class EntryPredicate[K, V](
       include: Entry[K, V] => Boolean, prev: Predicate[Object, Object] = null)
     extends Predicate[K, V] {
     def this(f: (K, V) => Boolean) = this(entry => f(entry.key, entry.value))
-    def apply(entry: Entry[K, V]) = (prev == null || prev(entry.asInstanceOf[Entry[Object, Object]])) && include(entry)
+    def apply(entry: Entry[K, V]) = (prev == null || prev(entry)) && include(entry)
   }
-  private[Scala] final class ValuePredicate[V](
-      include: V => Boolean, prev: Predicate[Object, Object] = null)
-    extends Predicate[Object, V] {
-    def apply(entry: Entry[Object, V]) = (prev == null || prev(entry.asInstanceOf[Entry[Object, Object]])) && include(entry.value)
+  private[Scala] final class ValuePredicate[K, V](
+    include: V => Boolean, prev: Predicate[Object, Object] = null)
+  extends Predicate[K, V] {
+    def apply(entry: Entry[Object, V]) = (prev == null || prev(entry)) && include(entry.value)
   }
-  private[Scala] final class KeyPredicate[K](include: K => Boolean, prev: Predicate[Object, Object] = null)
-    extends Predicate[K, Object] {
-    def apply(entry: Entry[K, Object]) = (prev == null || prev(entry.asInstanceOf[Entry[Object, Object]])) && include(entry.key)
+  private[Scala] final class KeyPredicate[K, V](
+    include: K => Boolean, prev: Predicate[Object, Object] = null)
+  extends Predicate[K, V] {
+    def apply(entry: Entry[K, V]) = (prev == null || prev(entry)) && include(entry.key)
   }
 }

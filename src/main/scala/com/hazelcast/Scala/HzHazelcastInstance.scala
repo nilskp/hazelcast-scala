@@ -6,22 +6,19 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.duration.FiniteDuration
 
-import com.hazelcast.core._
-import com.hazelcast.core.LifecycleEvent.LifecycleState
+import com.hazelcast.core._, LifecycleEvent.LifecycleState
+import com.hazelcast.cluster.{ Member, InitialMembershipEvent }
+import com.hazelcast.map.IMap
 import com.hazelcast.partition.PartitionLostEvent
-import com.hazelcast.transaction.TransactionOptions
-import com.hazelcast.transaction.TransactionOptions.TransactionType
-import com.hazelcast.transaction.TransactionalTask
-import com.hazelcast.transaction.TransactionalTaskContext
+import com.hazelcast.transaction._, TransactionOptions.TransactionType
 import com.hazelcast.nio.serialization.ByteArraySerializer
 import com.hazelcast.Scala.serialization.ByteArrayInterceptor
 import scala.reflect.ClassTag
-import com.hazelcast.transaction.TransactionContext
 
 private object HzHazelcastInstance {
   private[this] val DefaultTxnOpts = TransactionOptions.getDefault
   private val DefaultTxnType = DefaultTxnOpts.getTransactionType match {
-    case TransactionType.ONE_PHASE | TransactionType.LOCAL => OnePhase
+    case TransactionType.ONE_PHASE => OnePhase
     case TransactionType.TWO_PHASE => TwoPhase(DefaultTxnOpts.getDurability)
   }
   private val DefaultTxnTimeout = FiniteDuration(TransactionOptions.getDefault.getTimeoutMillis, TimeUnit.MILLISECONDS)
@@ -41,7 +38,7 @@ final class HzHazelcastInstance(hz: HazelcastInstance) extends MemberEventSubscr
     keys.groupBy(ps.getPartition(_).getOwner)
   }
 
-  private[Scala] def queryPool(): IExecutorService = hz.getExecutorService("hz:query")
+  private[Scala] def queryPool: IExecutorService = hz.getExecutorService("hz:query")
 
   def onDistributedObjectEvent(runOn: ExecutionContext = null)(listener: PartialFunction[DistributedObjectChange, Unit]): ESR = {
     val regId = hz addDistributedObjectListener EventSubscription.asDistributedObjectListener(listener, Option(runOn))

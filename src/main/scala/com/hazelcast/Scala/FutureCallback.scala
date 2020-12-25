@@ -5,8 +5,9 @@ import scala.concurrent.Promise
 import java.util.concurrent.ExecutionException
 import scala.util.control.NonFatal
 
-private[Scala] final class FutureCallback[X, R](nullReplacement: R = null.asInstanceOf[R])(implicit map: X => R)
-    extends ExecutionCallback[X] {
+private[Scala] final class FutureCallback[X, R](
+  nullReplacement: R = null.asInstanceOf[R])(implicit map: X => R)
+extends ExecutionCallback[X] {
 
   private[this] val promise = Promise[R]
   def future = promise.future

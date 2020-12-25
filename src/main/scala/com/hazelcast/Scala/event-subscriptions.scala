@@ -3,14 +3,22 @@ package com.hazelcast.Scala
 import scala.concurrent.{ ExecutionContext, Future, Promise }
 
 import com.hazelcast.core.{
-  LifecycleEvent, MigrationEvent, DistributedObjectEvent, InitialMembershipEvent, MembershipEvent, MemberAttributeEvent,
-  LifecycleListener, DistributedObjectListener, MigrationListener, InitialMembershipListener, ClientListener,
-  Client
+  LifecycleEvent, DistributedObjectEvent,
+  LifecycleListener, DistributedObjectListener
+}
+import com.hazelcast.client.{ ClientListener, Client }
+import com.hazelcast.cluster.{
+  InitialMembershipEvent, MembershipEvent, InitialMembershipListener
+}
+import com.hazelcast.partition.{
+  MigrationListener
 }
 import com.hazelcast.map.MapPartitionLostEvent
 import com.hazelcast.map.listener.MapPartitionLostListener
 import com.hazelcast.partition.PartitionLostEvent
 import com.hazelcast.partition.PartitionLostListener
+import com.hazelcast.partition.MigrationState
+import com.hazelcast.partition.ReplicaMigrationEvent
 
 private[Scala] trait EventSubscription {
   type ESR
@@ -79,30 +87,32 @@ private[Scala] object EventSubscription {
 
   def asMigrationListener(listener: PartialFunction[MigrationEvent, Unit], ec: Option[ExecutionContext]) =
     new PfProxy(listener, ec) with MigrationListener {
-      def migrationCompleted(evt: MigrationEvent) = invokeWith(evt)
-      def migrationFailed(evt: MigrationEvent) = invokeWith(evt)
-      def migrationStarted(evt: MigrationEvent) = invokeWith(evt)
+      def migrationStarted(state: MigrationState) = invokeWith(MigrationStarted(state))
+      def migrationFinished(state: MigrationState) = invokeWith(MigrationFinished(state))
+      def replicaMigrationCompleted(evt: ReplicaMigrationEvent) = invokeWith(ReplicaMigrationCompleted(evt))
+      def replicaMigrationFailed(evt: ReplicaMigrationEvent) = invokeWith(ReplicaMigrationFailed(evt))
+
     }
 
   def asMembershipListener(
-    listener: PartialFunction[MemberEvent, Unit],
-    ec: Option[ExecutionContext]): (Future[InitialMembershipEvent], InitialMembershipListener) = {
-    import com.hazelcast.cluster.MemberAttributeOperationType._
+      listener: PartialFunction[MemberEvent, Unit],
+      ec: Option[ExecutionContext])
+      : (Future[InitialMembershipEvent], InitialMembershipListener) = {
+
     import MembershipEvent._
     import collection.JavaConverters._
 
-    val promise = Promise[InitialMembershipEvent]
+    val promise = Promise[InitialMembershipEvent]()
     promise.future -> new PfProxy(listener, ec) with InitialMembershipListener {
       def init(evt: InitialMembershipEvent) = promise success evt
       def memberAdded(evt: MembershipEvent) = hear(evt)
       def memberRemoved(evt: MembershipEvent) = hear(evt)
-      def memberAttributeChanged(evt: MemberAttributeEvent) = hear(evt)
       private def hear(evt: MembershipEvent) = {
         val event: MemberEvent = evt match {
-          case evt: MemberAttributeEvent if evt.getOperationType == PUT && evt.getValue != null => MemberAttributeUpdated(evt.getMember, evt.getKey, evt.getValue)(evt.getCluster)
-          case evt: MemberAttributeEvent if evt.getOperationType == REMOVE || evt.getValue == null => MemberAttributeRemoved(evt.getMember, evt.getKey)(evt.getCluster)
-          case evt: MembershipEvent if evt.getEventType == MEMBER_ADDED => MemberAdded(evt.getMember, evt.getMembers.asScala)(evt.getCluster)
-          case evt: MembershipEvent if evt.getEventType == MEMBER_REMOVED => MemberRemoved(evt.getMember, evt.getMembers.asScala)(evt.getCluster)
+          case evt: MembershipEvent if evt.getEventType == MEMBER_ADDED =>
+            MemberAdded(evt.getMember, evt.getMembers.asScala)(evt.getCluster)
+          case evt: MembershipEvent if evt.getEventType == MEMBER_REMOVED =>
+            MemberRemoved(evt.getMember, evt.getMembers.asScala)(evt.getCluster)
         }
         invokeWith(event)
       }

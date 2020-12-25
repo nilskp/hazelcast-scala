@@ -2,8 +2,7 @@ package com.hazelcast.Scala.dds
 
 import com.hazelcast.Scala._
 import java.util.Map.Entry
-import com.hazelcast.query.Predicate
-import com.hazelcast.query.TruePredicate
+import com.hazelcast.query.{ Predicate, Predicates }
 import scala.concurrent.ExecutionContext
 
 class EntryMapDDS[K, V](dds: MapDDS[K, V, Entry[K, V]]) extends MapEntryEventSubscription[K, V] {
@@ -15,10 +14,10 @@ class EntryMapDDS[K, V](dds: MapDDS[K, V, Entry[K, V]]) extends MapEntryEventSub
         new MapDDS(dds.imap, dds.predicate, Some(keySet), dds.pipe)
       case filter => dds.pipe match {
         case None =>
-          val predicate = new KeyPredicate[K](filter, dds.predicate.orNull.asInstanceOf[Predicate[Object, Object]])
+          val predicate = new KeyPredicate[K, V](filter, dds.predicate.orNull)
           new MapDDS(dds.imap, Some(predicate), dds.keySet, dds.pipe)
         case Some(existingPipe) =>
-          val keyFilter = (new KeyPredicate[K](filter).apply _).asInstanceOf[Entry[K, V] => Boolean]
+          val keyFilter = (new KeyPredicate[K, V](filter).apply _).asInstanceOf[Entry[K, V] => Boolean]
           val pipe = new FilterPipe(keyFilter, existingPipe)
           new MapDDS(dds.imap, dds.predicate, dds.keySet, Some(pipe))
       }
@@ -27,10 +26,10 @@ class EntryMapDDS[K, V](dds: MapDDS[K, V, Entry[K, V]]) extends MapEntryEventSub
   def filterValues(filter: V => Boolean): DDS[Entry[K, V]] = {
     dds.pipe match {
       case None =>
-        val predicate = new ValuePredicate[V](filter, dds.predicate.orNull.asInstanceOf[Predicate[Object, Object]])
+        val predicate = new ValuePredicate[K, V](filter, dds.predicate.orNull)
         new MapDDS(dds.imap, Some(predicate), dds.keySet, dds.pipe)
       case Some(existingPipe) =>
-        val valueFilter = (new ValuePredicate[V](filter).apply _).asInstanceOf[Entry[K, V] => Boolean]
+        val valueFilter = (new ValuePredicate[K, V](filter).apply _).asInstanceOf[Entry[K, V] => Boolean]
         val pipe = new FilterPipe(valueFilter, existingPipe)
         new MapDDS(dds.imap, dds.predicate, dds.keySet, Some(pipe))
     }
@@ -63,13 +62,13 @@ class EntryMapDDS[K, V](dds: MapDDS[K, V, Entry[K, V]]) extends MapEntryEventSub
 
     val (singleKey, predicate) = dds.keySet match {
       case None =>
-        None -> dds.predicate.getOrElse(TruePredicate.INSTANCE).asInstanceOf[Predicate[K, V]]
+        None -> (dds.predicate getOrElse Predicates.alwaysTrue[K, V])
       case Some(keys) if keys.size <= 1 =>
-        keys.headOption -> dds.predicate.getOrElse(TruePredicate.INSTANCE).asInstanceOf[Predicate[K, V]]
+        keys.headOption -> (dds.predicate getOrElse Predicates.alwaysTrue[K, V])
       case Some(keys) =>
         None -> (dds.predicate match {
-          case None => new KeyPredicate(keys).asInstanceOf[Predicate[K, V]]
-          case Some(predicate) => (new KeyPredicate(keys) && predicate).asInstanceOf[Predicate[K, V]]
+          case None => new KeyPredicate[K, V](keys)
+          case Some(predicate) => (new KeyPredicate[K, V](keys) && predicate)
         })
     }
     val regId = singleKey match {

@@ -8,24 +8,23 @@ plugins {
     id 'com.jfrog.bintray' version "1.8.1"
     id 'scala'
     id 'maven-publish'
-    id "com.github.maiflai.scalatest" version "0.25"
+    id "com.github.maiflai.scalatest" version "0.30"
 }
 
 ext {
     latestScalaFull = [
-        '2.11': '2.11.12',
-        '2.12': '2.12.10',
-        '2.13': '2.13.1'
+        '2.12': '2.12.12',
+        '2.13': '2.13.4'
     ]
 
     vScalaTest = '3.0.8'
     vPegdown = '1.6.0'
     vScala = System.properties.scalaVersion ?: '2.13'
     vScalaFull = latestScalaFull[vScala]
-    vHazelcast = '3.12.3'
-    vKryo = '4.0.2'
+    vHazelcast = '4.1.1'
+    vKryo = '5.0.3'
     vObjenesis = '3.1'
-    vLz4 = '1.6.0'
+    vLz4 = '1.7.1'
 }
 
 allprojects {
@@ -43,12 +42,11 @@ allprojects {
 
         compileOnly "org.scala-lang:scala-reflect:$vScalaFull"
         if (vScala == '2.13') {
-            compileOnly "org.scala-lang.modules:scala-parallel-collections_$vScala:0.2.0"
-            testCompile "org.scala-lang.modules:scala-parallel-collections_$vScala:0.2.0"
+            compileOnly "org.scala-lang.modules:scala-parallel-collections_$vScala:1.0.0"
+            testCompile "org.scala-lang.modules:scala-parallel-collections_$vScala:1.0.0"
         }
 
         compileOnly "com.hazelcast:hazelcast:$vHazelcast"
-        compileOnly "com.hazelcast:hazelcast-client:$vHazelcast"
 
         compileOnly "com.esotericsoftware:kryo:$vKryo"
         compileOnly "org.objenesis:objenesis:$vObjenesis"
@@ -59,7 +57,6 @@ allprojects {
         testCompile "org.pegdown:pegdown:$vPegdown"
         testCompile "org.scala-lang:scala-compiler:$vScalaFull"
         testCompile "com.hazelcast:hazelcast:$vHazelcast"
-        testCompile "com.hazelcast:hazelcast-client:$vHazelcast"
         testCompile "com.esotericsoftware:kryo:$vKryo"
         testCompile "org.objenesis:objenesis:$vObjenesis"
         testCompile "org.lz4:lz4-java:$vLz4"
@@ -80,18 +77,13 @@ test {
     maxParallelForks = 1
 }
 
-sourceCompatibility = 1.7
-if (vScala == '2.11') {
-    targetCompatibility = 1.7
-} else {
-    targetCompatibility = 1.8
-}
+sourceCompatibility = 1.8
+targetCompatibility = 1.8
 
 sourceSets {
-    def diff = (vScala == '2.11' || vScala == '2.12') ? 'src/main/legacy' : 'src/main/modern'
     main {
         scala {
-            srcDirs = ['src/main/scala', diff]
+            srcDirs = ['src/main/scala']
         }
     }
 }

@@ -7,8 +7,8 @@ import scala.concurrent.{ ExecutionContext, Future }
 import com.hazelcast.config.{ Config, ListenerConfig }
 import com.hazelcast.core._
 import com.hazelcast.core.LifecycleEvent.LifecycleState
-import com.hazelcast.core.MigrationEvent
 import com.hazelcast.partition.PartitionLostEvent
+import com.hazelcast.cluster.InitialMembershipEvent
 
 class HzConfig(conf: Config) extends MemberEventSubscription {
   type ESR = Config

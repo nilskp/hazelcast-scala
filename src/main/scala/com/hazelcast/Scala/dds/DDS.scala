@@ -6,11 +6,11 @@ import scala.collection.{ Set => aSet }
 import scala.reflect.ClassTag
 
 import com.hazelcast.Scala._
-import com.hazelcast.core.IMap
+import com.hazelcast.map.IMap
 import com.hazelcast.query.Predicate
 
 /** Distributed data structure. */
-sealed trait DDS[E] {
+sealed trait DDS[+E] {
 
   def filter(f: E => Boolean): DDS[E]
   def map[F](m: E => F): DDS[F]
@@ -60,11 +60,11 @@ private[Scala] final class MapGroupDDS[K, V, G, E](val dds: MapDDS[K, V, (G, E)]
 
 private[Scala] final class MapDDS[K, V, E](
     val imap: IMap[K, V],
-    val predicate: Option[Predicate[_, _]],
+    val predicate: Option[Predicate[K, V]],
     val keySet: Option[collection.Set[K]],
     val pipe: Option[Pipe[E]]) extends DDS[E] {
 
-  def this(imap: IMap[K, V], predicate: Predicate[_, _] = null) =
+  def this(imap: IMap[K, V], predicate: Predicate[K, V] = null) =
     this(imap, Option(predicate), None, None)
 
   def groupBy[G, F](gf: E => G, mf: E => F): GroupDDS[G, F] = {
@@ -76,7 +76,7 @@ private[Scala] final class MapDDS[K, V, E](
   def filter(f: E => Boolean): DDS[E] = {
     if (this.pipe.isEmpty) {
       val filter = f.asInstanceOf[Entry[_, _] => Boolean]
-      val predicate = new EntryPredicate(filter, this.predicate.orNull.asInstanceOf[Predicate[Object, Object]])
+      val predicate = new EntryPredicate[K, V](filter, this.predicate.orNull)
       new MapDDS[K, V, E](this.imap, Some(predicate), this.keySet, this.pipe)
     } else {
       val prev = this.pipe getOrElse PassThroughPipe[E]
